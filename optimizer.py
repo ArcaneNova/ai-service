@@ -73,11 +73,16 @@ def optimize_headway(
     end_hour:          int  = 23,
 ) -> Dict:
     """
-    Cyclic GA for bus scheduling.
-    Each bus b departs at: start_min + offset_b, then every cycle_time minutes.
-    GA evolves the F-element offset vector to minimise total passenger wait time.
+    Round-trip cyclic scheduler.
+    Each bus does: outbound (trip_duration_min) → layover at terminus
+    → return trip (trip_duration_min) → layover at origin → next outbound.
+    cycle_time = 2 × trip_duration_min + turnaround_min
+    Buses are evenly spaced in phase; AI finds the base phase that
+    minimises total passenger-weighted wait time across the demand curve.
     """
-    cycle_time = trip_duration_min + turnaround_min
+    cycle_time    = 2 * trip_duration_min + turnaround_min
+    # layover split: half at each end
+    layover_each  = turnaround_min / 2.0
     start_min  = start_hour * 60
     end_min    = end_hour   * 60
     window     = end_min - start_min
@@ -87,7 +92,7 @@ def optimize_headway(
 
     min_headway    = math.ceil(cycle_time / fleet_size)
     max_per_bus    = max(1, window // cycle_time)
-    expected_trips = fleet_size * max_per_bus
+    expected_trips = fleet_size * max_per_bus * 2   # outbound + return each cycle
 
     # ── Bus count recommendations for common target headways ─────────────────
     recommendations = {}
@@ -106,16 +111,24 @@ def optimize_headway(
     demand_optimal_headway = max(3, int(capacity * 0.85 * 60 / peak_demand))
     demand_optimal_buses   = math.ceil(cycle_time / demand_optimal_headway)
 
-    def expand(offsets: List[int]) -> List[Tuple[int, int, int]]:
-        """Generate all (departure_min, bus_idx, trip_num) tuples for the day."""
+    def expand(offsets: List[int]) -> List[Tuple[int, int, int, str]]:
+        """Generate all (departure_min, bus_idx, leg_num, direction) tuples.
+        Each cycle produces:
+          - outbound:  dep_out = start_min + offset + k*cycle_time
+          - return:    dep_ret = dep_out + trip_duration_min + layover_each
+        leg_num counts the round-trip number (0-based).
+        """
         trips = []
-        for bus_idx, offset in enumerate(offsets):   # preserve bus identity order
-            dep      = start_min + (offset % cycle_time)
-            trip_num = 0
-            while dep < end_min:
-                trips.append((dep, bus_idx, trip_num))
-                dep      += cycle_time
-                trip_num += 1
+        for bus_idx, offset in enumerate(offsets):
+            dep_out  = start_min + (offset % cycle_time)
+            leg_num  = 0
+            while dep_out < end_min:
+                trips.append((dep_out, bus_idx, leg_num, "outbound"))
+                dep_ret = dep_out + trip_duration_min + layover_each
+                if dep_ret < end_min:
+                    trips.append((int(dep_ret), bus_idx, leg_num, "return"))
+                dep_out  += cycle_time
+                leg_num  += 1
         return sorted(trips, key=lambda x: x[0])
 
     def departures_of(offsets: List[int]) -> List[int]:
@@ -155,12 +168,21 @@ def optimize_headway(
     final_trips   = expand(best)
     trips_per_bus = [0] * fleet_size
     slots         = []
-    prev_dep      = None
+    prev_dep_out  = None   # last outbound departure (for outbound headway)
+    prev_dep_ret  = None   # last return departure (for return headway)
 
-    for (dep, bus_idx, trip_num) in final_trips:
-        headway = dep - prev_dep if prev_dep is not None else 0
+    for entry in final_trips:
+        dep, bus_idx, leg_num, direction = entry
         hour    = min(dep // 60, 23)
         arrival = dep + trip_duration_min
+
+        # headway: gap from previous slot of same direction
+        if direction == "outbound":
+            headway      = dep - prev_dep_out if prev_dep_out is not None else 0
+            prev_dep_out = dep
+        else:
+            headway      = dep - prev_dep_ret if prev_dep_ret is not None else 0
+            prev_dep_ret = dep
 
         ml_demand: float = demand_curve[hour]
         if _pred is not None:
@@ -189,12 +211,12 @@ def optimize_headway(
             "hour":               hour,
             "headway_min":        headway,
             "bus_number":         bus_idx + 1,
-            "trip_number":        trip_num + 1,
+            "trip_number":        leg_num + 1,
+            "direction":          direction,
             "demand_score":       round(ml_demand, 1),
             "crowd_level":        crowd,
         })
         trips_per_bus[bus_idx] += 1
-        prev_dep = dep
 
     logger.info(
         f"GA done: converged gen={convergence_gen}, score={best_score:.1f}, "
@@ -231,9 +253,10 @@ def optimize_headway(
             "wait_score":          round(best_score, 2),
             "even_gap_min":        round(even_gap, 2),
             "note": (
-                f"{fleet_size} buses evenly spaced every {round(even_gap,1)} min. "
-                f"Fleet start at offset {best_phase} min minimises passenger wait. "
-                f"Min headway = {min_headway} min. ~{expected_trips} total trips."
+                f"{fleet_size} buses, round-trip cycle {cycle_time} min "
+                f"(2×{trip_duration_min} trip + {turnaround_min} layover). "
+                f"Evenly spaced every {round(even_gap,1)} min. "
+                f"Optimal fleet start at +{best_phase} min offset."
             ),
         },
     }
