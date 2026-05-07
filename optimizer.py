@@ -92,7 +92,22 @@ def optimize_headway(
     max_per_bus    = max(1, window // cycle_time)
     expected_trips = fleet_size * max_per_bus
 
+    # ── Bus count recommendations for common target headways ─────────────────
+    recommendations = {}
+    for target_min in [3, 5, 8, 10, 15, 20, 30]:
+        recommendations[f"{target_min}min"] = math.ceil(cycle_time / target_min)
+
     demand_curve = [_demand_at_hour(h, is_weekend, is_holiday) for h in range(24)]
+
+    # ── Peak demand and demand-optimal headway ───────────────────────────────
+    peak_demand   = max(demand_curve)
+    avg_demand    = sum(demand_curve) / 24
+    # BRT capacity: ~80 seated + standing. Optimal headway to keep load ≤ 85%.
+    capacity      = 80
+    # At peak demand D (pax/hr), headway H (min): passengers per trip = D * H/60
+    # Keep ≤ capacity*0.85 → H ≤ capacity*0.85*60/D
+    demand_optimal_headway = max(3, int(capacity * 0.85 * 60 / peak_demand))
+    demand_optimal_buses   = math.ceil(cycle_time / demand_optimal_headway)
 
     logger.info(
         f"Cyclic GA: route={route_id}, {fleet_size} buses, "
@@ -225,17 +240,29 @@ def optimize_headway(
     )
 
     return {
-        "route_id":          route_id,
-        "date":              date,
-        "fleet_size":        fleet_size,
-        "trip_duration_min": trip_duration_min,
-        "turnaround_min":    turnaround_min,
-        "cycle_time_min":    cycle_time,
-        "min_headway_min":   min_headway,
-        "total_trips":       len(slots),
-        "trips_per_bus":     trips_per_bus,
-        "slots":             slots,
-        "total_wait_score":  round(best_score, 2),
+        "route_id":                  route_id,
+        "date":                      date,
+        "fleet_size":                fleet_size,
+        "trip_duration_min":         trip_duration_min,
+        "turnaround_min":            turnaround_min,
+        "cycle_time_min":            cycle_time,
+        "min_headway_min":           min_headway,
+        "total_trips":               len(slots),
+        "trips_per_bus":             trips_per_bus,
+        "slots":                     slots,
+        "total_wait_score":          round(best_score, 2),
+        "recommendations": {
+            "buses_for_headway":         recommendations,
+            "demand_optimal_headway_min": demand_optimal_headway,
+            "demand_optimal_buses":       demand_optimal_buses,
+            "peak_demand_per_hour":       round(peak_demand, 1),
+            "avg_demand_per_hour":        round(avg_demand, 1),
+            "note": (
+                f"Peak demand {round(peak_demand,0):.0f} pax/h. "
+                f"To keep buses ≤85% full, use headway ≤{demand_optimal_headway} min "
+                f"({demand_optimal_buses} buses needed)."
+            ),
+        },
         "optimization_info": {
             "generations":      generations,
             "population_size":  population_size,
