@@ -18,7 +18,6 @@ Example: 5 buses, 90 min trip, 15 min turnaround:
 """
 
 import logging
-import random
 import math
 from typing import List, Dict, Tuple
 
@@ -72,8 +71,6 @@ def optimize_headway(
     is_holiday:        bool = False,
     start_hour:        int  = 5,
     end_hour:          int  = 23,
-    population_size:   int  = 60,
-    generations:       int  = 120,
 ) -> Dict:
     """
     Cyclic GA for bus scheduling.
@@ -110,14 +107,15 @@ def optimize_headway(
     demand_optimal_buses   = math.ceil(cycle_time / demand_optimal_headway)
 
     logger.info(
-        f"Cyclic GA: route={route_id}, {fleet_size} buses, "
-        f"cycle={cycle_time}min, min_headway={min_headway}min, "
-        f"~{expected_trips} total trips over {start_hour}h-{end_hour}h"
+        f"Phase scan: route={route_id}, {fleet_size} buses, "
+        f"cycle={cycle_time}min, headway={min_headway}min, "
+        f"best_phase={best_phase}min, ~{expected_trips} total trips ({start_hour}h-{end_hour}h)"
     )
 
     def expand(offsets: List[int]) -> List[Tuple[int, int, int]]:
+        """Generate all (departure_min, bus_idx, trip_num) tuples for the day."""
         trips = []
-        for bus_idx, offset in enumerate(sorted(offsets)):
+        for bus_idx, offset in enumerate(offsets):   # preserve bus identity order
             dep      = start_min + (offset % cycle_time)
             trip_num = 0
             while dep < end_min:
@@ -129,62 +127,26 @@ def optimize_headway(
     def departures_of(offsets: List[int]) -> List[int]:
         return [t[0] for t in expand(offsets)]
 
-    def random_individual() -> List[int]:
-        n = min(fleet_size, cycle_time)
-        return sorted(random.sample(range(0, cycle_time), n))
+    # ── Demand-aware phase optimisation ──────────────────────────────────────
+    # Buses are ALWAYS evenly spaced by cycle_time / fleet_size minutes.
+    # The AI searches for the single best base_phase (0..cycle_time-1 min)
+    # that shifts the whole evenly-spaced fleet to minimise total
+    # passenger-weighted wait time (aligns peak service with peak demand).
+    even_gap = cycle_time / fleet_size   # exact float gap between buses
 
-    def crossover(p1: List[int], p2: List[int]) -> List[int]:
-        if len(p1) < 2:
-            return p1[:]
-        point = random.randint(1, len(p1) - 1)
-        child = sorted(set(p1[:point] + p2[point:]))
-        while len(child) < fleet_size:
-            t = random.randint(0, cycle_time - 1)
-            if t not in child:
-                child.append(t)
-                child.sort()
-        return child[:fleet_size]
+    def make_offsets(base_phase: int) -> List[int]:
+        """Return fleet_size evenly-spaced offsets starting at base_phase."""
+        return [int((base_phase + i * even_gap) % cycle_time) for i in range(fleet_size)]
 
-    def mutate(individual: List[int], rate: float = 0.25) -> List[int]:
-        mutated     = individual[:]
-        used        = set(mutated)
-        shift_range = max(5, cycle_time // 6)
-        for i in range(len(mutated)):
-            if random.random() < rate:
-                new_t = (mutated[i] + random.randint(-shift_range, shift_range)) % cycle_time
-                if new_t not in used:
-                    used.discard(mutated[i])
-                    mutated[i] = new_t
-                    used.add(new_t)
-        return sorted(mutated)
+    def score_phase(base_phase: int) -> float:
+        return _total_wait_time(departures_of(make_offsets(base_phase)),
+                                demand_curve, start_min, end_min)
 
-    def score(offsets: List[int]) -> float:
-        return _total_wait_time(departures_of(offsets), demand_curve, start_min, end_min)
-
-    population      = [random_individual() for _ in range(population_size)]
-    best            = min(population, key=score)
-    best_score      = score(best)
-    convergence_gen = 0
-
-    for gen in range(generations):
-        scored = sorted([(score(ind), ind) for ind in population], key=lambda x: x[0])
-
-        elite_n = max(2, population_size // 10)
-        new_pop = [ind for _, ind in scored[:elite_n]]
-
-        while len(new_pop) < population_size:
-            t1    = min(random.sample(scored, min(4, len(scored))), key=lambda x: x[0])[1]
-            t2    = min(random.sample(scored, min(4, len(scored))), key=lambda x: x[0])[1]
-            child = mutate(crossover(t1, t2))
-            if len(child) == fleet_size:
-                new_pop.append(child)
-
-        population = new_pop
-        gen_best   = scored[0][0]
-        if gen_best < best_score:
-            best_score      = gen_best
-            best            = scored[0][1]
-            convergence_gen = gen
+    # Full scan over every minute — fast (cycle_time ≤ 420 min)
+    best_phase      = min(range(cycle_time), key=score_phase)
+    best_score      = score_phase(best_phase)
+    best            = make_offsets(best_phase)
+    convergence_gen = best_phase   # repurposed as "optimal base phase (min)"
 
     def min_to_time(m: int) -> str:
         h, mn = divmod(int(m) % (24 * 60), 60)
@@ -264,13 +226,14 @@ def optimize_headway(
             ),
         },
         "optimization_info": {
-            "generations":      generations,
-            "population_size":  population_size,
-            "convergence_gen":  convergence_gen,
-            "algorithm":        "Cyclic GA - phase-offset optimisation per bus",
+            "algorithm":           "Even-spacing + demand-aware phase scan",
+            "optimal_base_phase":  best_phase,
+            "wait_score":          round(best_score, 2),
+            "even_gap_min":        round(even_gap, 2),
             "note": (
-                f"{fleet_size} buses x ~{max_per_bus} trips/bus = ~{expected_trips} total trips. "
-                f"Min headway = {min_headway} min (cycle {cycle_time} min / {fleet_size} buses)."
+                f"{fleet_size} buses evenly spaced every {round(even_gap,1)} min. "
+                f"Fleet start at offset {best_phase} min minimises passenger wait. "
+                f"Min headway = {min_headway} min. ~{expected_trips} total trips."
             ),
         },
     }
