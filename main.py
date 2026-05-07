@@ -106,13 +106,15 @@ class ETAResponse(BaseModel):
     model:           str
 
 class OptimizeRequest(BaseModel):
-    route_id:    str
-    date:        str
-    fleet_size:  int  = Field(..., ge=1, le=50)
-    is_weekend:  bool = False
-    is_holiday:  bool = False
-    start_hour:  int  = Field(5,  ge=0, le=23)
-    end_hour:    int  = Field(23, ge=1, le=24)
+    route_id:          str
+    date:              str
+    fleet_size:        int  = Field(..., ge=1, le=50)
+    trip_duration_min: int  = Field(90,  ge=10, le=360)
+    turnaround_min:    int  = Field(15,  ge=0,  le=60)
+    is_weekend:        bool = False
+    is_holiday:        bool = False
+    start_hour:        int  = Field(5,  ge=0, le=23)
+    end_hour:          int  = Field(23, ge=1, le=24)
 
 class RetrainRequest(BaseModel):
     retrain_xgboost:  bool = True
@@ -395,6 +397,7 @@ def headway_optimization(req: OptimizeRequest):
         from optimizer import optimize_headway
         result = optimize_headway(
             route_id=req.route_id, date=req.date, fleet_size=req.fleet_size,
+            trip_duration_min=req.trip_duration_min, turnaround_min=req.turnaround_min,
             is_weekend=req.is_weekend, is_holiday=req.is_holiday,
             start_hour=req.start_hour, end_hour=req.end_hour,
         )
