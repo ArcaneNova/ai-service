@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: smartdtc-ai-service
+    runtime: python
+    region: singapore          # closest to India; change to frankfurt / ohio as needed
+    plan: starter              # 512 MB RAM — free tier is too small for TF+XGBoost
+    rootDir: ai-service        # relative to repo root
+    buildCommand: pip install --no-cache-dir -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: MODEL_DIR
+        value: models/saved
+      - key: PYTHONUNBUFFERED
+        value: "1"
+    healthCheckPath: /health
