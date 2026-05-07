@@ -108,7 +108,7 @@ class ETAResponse(BaseModel):
 class OptimizeRequest(BaseModel):
     route_id:          str
     date:              str
-    fleet_size:        int  = Field(..., ge=1, le=50)
+    fleet_size:        int  = Field(..., ge=1, le=200)
     trip_duration_min: int  = Field(90,  ge=10, le=360)
     turnaround_min:    int  = Field(15,  ge=0,  le=60)
     is_weekend:        bool = False
