@@ -5,6 +5,7 @@ All six demand models and six delay models are supported.
 """
 
 import math
+import datetime
 import numpy as np
 import model_loader
 
@@ -32,23 +33,95 @@ def _crowd_level(count: int) -> str:
     return "critical"
 
 
-def _build_demand_features(hour, is_weekend, is_holiday, weather, avg_temp_c, special_event) -> np.ndarray:
-    """Build the 23-feature vector that the demand scaler was fitted on."""
-    wf = WEATHER_FACTOR.get(weather, 1.0)
-    # cyclic hour encoding
-    sin_h = math.sin(2 * math.pi * hour / 24)
-    cos_h = math.cos(2 * math.pi * hour / 24)
+def _build_demand_features(hour, is_weekend, is_holiday, weather, avg_temp_c,
+                           special_event, date: str = "",
+                           route_id_str: str = "") -> np.ndarray:
+    """
+    Build the exact 23-feature vector the demand scaler was trained on.
+
+    Confirmed feature order (reverse-engineered from scaler means):
+     0  route_id         – numeric DTC route number; we use 7280 (dataset mean)
+                           when only a MongoDB ObjectID is available
+     1  hour             – 0-23
+     2  day_of_week      – 0=Mon … 6=Sun
+     3  is_weekend       – bool
+     4  is_holiday       – bool
+     5  is_major_event   – bool (always 0 in current data)
+     6  avg_temp_c       – float (Delhi avg ≈ 25-35)
+     7  special_event    – bool
+     8  month            – 1-12
+     9  quarter          – 1-4
+    10  distance_km      – constant 15.0 in training data
+    11  total_stops      – constant 0 in training data
+    12  year             – YYYY
+    13  day_of_year      – 1-365
+    14  rt_peripheral    – route_type == 'peripheral' (one-hot, drop commercial_hub)
+    15  rt_residential   – route_type == 'residential'
+    16  w_extreme        – weather == 'extreme'       (one-hot, drop clear)
+    17  w_fog            – weather == 'fog'
+    18  w_heatwave       – weather == 'heatwave'
+    19  w_heavy_rain     – weather in {'heavy_rain','rain'}
+    20  w_light_rain     – weather == 'light_rain'
+    21  is_rush_hour     – hour in {7,8,9,17,18,19,20}
+    22  is_early_morning – hour in {0,1,2,3}
+    """
+    # ── Parse date fields ───────────────────────────────────────────────────
+    day_of_week = 0
+    month       = 1
+    quarter     = 1
+    day_of_year = 1
+    year        = datetime.date.today().year
+    if date:
+        try:
+            d           = datetime.date.fromisoformat(date)
+            day_of_week = d.weekday()          # 0=Mon … 6=Sun
+            month       = d.month
+            quarter     = (d.month - 1) // 3 + 1
+            day_of_year = d.timetuple().tm_yday
+            year        = d.year
+        except ValueError:
+            pass
+
+    # ── Route ID: use mean (7280) since MongoDB IDs aren't numeric ──────────
+    route_id_num = 7280.0
+
+    # ── Weather one-hot (reference category = 'clear') ─────────────────────
+    w = weather.lower()
+    w_extreme    = 1 if w == "extreme"                    else 0
+    w_fog        = 1 if w == "fog"                        else 0
+    w_heatwave   = 1 if w == "heatwave"                   else 0
+    w_heavy_rain = 1 if w in ("heavy_rain", "rain")       else 0
+    w_light_rain = 1 if w == "light_rain"                 else 0
+    # w_clear is the dropped reference (when all five above = 0)
+
+    # ── Derived hour features ───────────────────────────────────────────────
+    is_rush_hour      = 1 if hour in {7, 8, 9, 17, 18, 19, 20} else 0
+    is_early_morning  = 1 if hour in {0, 1, 2, 3}               else 0
+
     return np.array([[
-        hour,
-        int(is_weekend),
-        int(is_holiday),
-        wf,
-        avg_temp_c,
-        int(special_event),
-        sin_h,
-        cos_h,
-        # padding zeros for remaining features expected by scaler (23 total)
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        route_id_num,           #  0
+        hour,                   #  1
+        day_of_week,            #  2
+        int(is_weekend),        #  3
+        int(is_holiday),        #  4
+        0,                      #  5  is_major_event (always 0)
+        avg_temp_c,             #  6
+        int(special_event),     #  7
+        month,                  #  8
+        quarter,                #  9
+        15.0,                   # 10  distance_km (constant in training)
+        0,                      # 11  total_stops  (constant in training)
+        float(year),            # 12
+        float(day_of_year),     # 13
+        0,                      # 14  rt_peripheral  (default: commercial_hub)
+        0,                      # 15  rt_residential
+        w_extreme,              # 16
+        w_fog,                  # 17
+        w_heatwave,             # 18
+        w_heavy_rain,           # 19
+        w_light_rain,           # 20
+        is_rush_hour,           # 21
+        is_early_morning,       # 22
     ]], dtype=np.float32)
 
 
@@ -91,7 +164,8 @@ def predict_demand(route_id: str, date: str, hour: int,
 
     if model is not None and scaler is not None:
         try:
-            raw = _build_demand_features(hour, is_weekend, is_holiday, weather, avg_temp_c, special_event)
+            raw = _build_demand_features(hour, is_weekend, is_holiday, weather,
+                                         avg_temp_c, special_event, date, route_id)
             # Adapt to scaler's expected feature count
             n_feat = scaler.n_features_in_
             if raw.shape[1] < n_feat:
