@@ -106,12 +106,6 @@ def optimize_headway(
     demand_optimal_headway = max(3, int(capacity * 0.85 * 60 / peak_demand))
     demand_optimal_buses   = math.ceil(cycle_time / demand_optimal_headway)
 
-    logger.info(
-        f"Phase scan: route={route_id}, {fleet_size} buses, "
-        f"cycle={cycle_time}min, headway={min_headway}min, "
-        f"best_phase={best_phase}min, ~{expected_trips} total trips ({start_hour}h-{end_hour}h)"
-    )
-
     def expand(offsets: List[int]) -> List[Tuple[int, int, int]]:
         """Generate all (departure_min, bus_idx, trip_num) tuples for the day."""
         trips = []
@@ -147,6 +141,12 @@ def optimize_headway(
     best_score      = score_phase(best_phase)
     best            = make_offsets(best_phase)
     convergence_gen = best_phase   # repurposed as "optimal base phase (min)"
+
+    logger.info(
+        f"Phase scan: route={route_id}, {fleet_size} buses, "
+        f"cycle={cycle_time}min, headway={min_headway}min, "
+        f"best_phase={best_phase}min, ~{expected_trips} total trips ({start_hour}h-{end_hour}h)"
+    )
 
     def min_to_time(m: int) -> str:
         h, mn = divmod(int(m) % (24 * 60), 60)
